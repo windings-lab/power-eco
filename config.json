@@ -1,0 +1,21 @@
+{
+  "port": 8777,
+  "sample_interval_s": 1.0,
+  "history_s": 3600,
+  "ddc_interval_s": 10,
+  "price_per_kwh": 4.32,
+  "currency": "₴",
+
+  "_rest": "Motherboard, RAM, SSDs, fans, USB: no sensor, fixed estimate (W, DC side).",
+  "rest_of_system_w": 30,
+  "_psu": "Wall power = DC power / efficiency. ~0.87 for an 80+ Gold PSU at low load.",
+  "psu_efficiency": 0.87,
+
+  "_monitors": "Matched by EDID model name. on_w_min/on_w_max are scaled by DDC brightness when it can be read; otherwise on_w_max is used.",
+  "monitors": {
+    "HP E243":     { "label": "HP E243",     "on_w_min": 10, "on_w_max": 20, "standby_w": 0.5, "ddc": true },
+    "DELL 2007FP": { "label": "Dell 2007FP", "on_w_min": 20, "on_w_max": 38, "standby_w": 2,   "ddc": true },
+    "SONY TV":     { "label": "Sony TV",     "on_w_min": 120, "on_w_max": 120, "standby_w": 1 }
+  },
+  "default_monitor": { "on_w_min": 25, "on_w_max": 25, "standby_w": 0.5 }
+}

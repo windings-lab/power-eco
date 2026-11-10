@@ -1,0 +1,14 @@
+[Unit]
+Description=Power eco mode: capped CPU and NVIDIA GPU
+After=nvidia-persistenced.service
+
+# Manual only: no [Install] section, so it can't be enabled at boot.
+#   systemctl start power-eco    -> eco on
+#   systemctl stop power-eco     -> restore previous settings
+# Limits live in /usr/local/bin/power-eco.
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/power-eco start
+ExecStop=/usr/local/bin/power-eco stop

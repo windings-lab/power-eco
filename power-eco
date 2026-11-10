@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# Power eco mode for CPU (intel_pstate + RAPL) and NVIDIA GPU.
+#   power-eco start   save current settings, apply eco limits
+#   power-eco stop    restore the saved settings
+# Run as root (via power-eco.service). Installed to /usr/local/bin.
+
+set -euo pipefail
+
+# ---- eco limits
+CPU_MAX_PCT=60          # intel_pstate max_perf_pct: ~60% of 3.9 GHz ≈ 2.3 GHz
+CPU_EPP=power           # energy_performance_preference
+CPU_NO_TURBO=1
+CPU_PL_W=65             # RAPL long+short term package limit (stock 125/251 W)
+GPU_CLK=210,1000        # MHz, stock boost 2100
+GPU_MEM_CLK=405,810     # MHz, stock 7001; raise to 405,5001 if screens flicker
+GPU_PL_W=100            # card minimum
+
+STATE=/run/power-eco.state
+CPU=/sys/devices/system/cpu
+PST=$CPU/intel_pstate
+RAPL=/sys/class/powercap/intel-rapl:0
+
+set_epp() { for f in "$CPU"/cpu*/cpufreq/energy_performance_preference; do echo "$1" >"$f"; done; }
+
+start() {
+    if [[ ! -e $STATE ]]; then
+        cat >"$STATE" <<EOF
+no_turbo=$(<"$PST/no_turbo")
+max_perf_pct=$(<"$PST/max_perf_pct")
+epp=$(<"$CPU/cpu0/cpufreq/energy_performance_preference")
+pl0=$(<"$RAPL/constraint_0_power_limit_uw")
+pl1=$(<"$RAPL/constraint_1_power_limit_uw")
+gpu_pl=$(nvidia-smi --query-gpu=power.limit --format=csv,noheader,nounits)
+gpu_pm=$(nvidia-smi --query-gpu=persistence_mode --format=csv,noheader)
+EOF
+    fi
+
+    echo "$CPU_NO_TURBO" >"$PST/no_turbo"
+    echo "$CPU_MAX_PCT" >"$PST/max_perf_pct"
+    set_epp "$CPU_EPP"
+    echo $((CPU_PL_W * 1000000)) >"$RAPL/constraint_0_power_limit_uw"
+    echo $((CPU_PL_W * 1000000)) >"$RAPL/constraint_1_power_limit_uw"
+
+    nvidia-smi -pm 1
+    nvidia-smi -lgc "$GPU_CLK"
+    nvidia-smi -lmc "$GPU_MEM_CLK"
+    nvidia-smi -pl "$GPU_PL_W"
+}
+
+stop() {
+    [[ -e $STATE ]] || { echo "no saved state, nothing to restore"; return; }
+    # shellcheck source=/dev/null
+    source "$STATE"
+
+    echo "$max_perf_pct" >"$PST/max_perf_pct"
+    echo "$no_turbo" >"$PST/no_turbo"
+    set_epp "$epp"
+    echo "$pl0" >"$RAPL/constraint_0_power_limit_uw"
+    echo "$pl1" >"$RAPL/constraint_1_power_limit_uw"
+
+    nvidia-smi -rgc
+    nvidia-smi -rmc
+    nvidia-smi -pl "$gpu_pl"
+    [[ $gpu_pm == Disabled ]] && nvidia-smi -pm 0
+    rm -f "$STATE"
+}
+
+case ${1-} in
+start) start ;;
+stop) stop ;;
+*) echo "usage: $0 start|stop" >&2; exit 2 ;;
+esac

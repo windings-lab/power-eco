@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Power Graph</title>
+<style>
+:root {
+  color-scheme: light;
+  --bg: #f4f4f2; --surface: #fcfcfb; --border: #e3e2de;
+  --text: #0b0b0b; --text-2: #52514e; --muted: #8a8984; --grid: #ebeae6;
+  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100;
+  --s5: #e87ba4; --s6: #008300; --s7: #6250d6; --s8: #e34948;
+  --good: #1a7f37; --warn: #9a6700; --off: #8a8984;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #111110; --surface: #1a1a19; --border: #2c2c2a;
+    --text: #f0efec; --text-2: #c3c2b7; --muted: #8a897f; --grid: #262624;
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500;
+    --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767;
+    --good: #3fb950; --warn: #d29922; --off: #6e6d66;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+main { max-width: 1200px; margin: 0 auto; padding: 20px 16px 40px; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+header { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-end; justify-content: space-between; margin-bottom: 16px; }
+.hero .label { color: var(--text-2); font-size: 13px; }
+.hero .value { font-size: 48px; font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.hero .value small { font-size: 22px; color: var(--text-2); font-weight: 500; }
+.hero .sub { color: var(--text-2); font-variant-numeric: tabular-nums; }
+.energy { text-align: right; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.energy b { color: var(--text); font-size: 18px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 16px; }
+.tile .k { color: var(--text-2); font-size: 12px; display: flex; align-items: center; gap: 6px; }
+.tile .v { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.tile .note { color: var(--muted); font-size: 12px; min-height: 1.4em; }
+.sw { width: 10px; height: 10px; border-radius: 3px; flex: none; }
+.chart-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 8px; }
+.chart-head h2 { font-size: 15px; margin: 0; }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.seg button { background: none; border: 0; color: var(--text-2); padding: 5px 12px; font: inherit; cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--text); color: var(--surface); }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; color: var(--text-2); font-size: 12px; margin-top: 8px; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+#wrap { position: relative; height: 340px; }
+canvas { display: block; width: 100%; height: 100%; }
+#tip { position: absolute; pointer-events: none; background: var(--surface); border: 1px solid var(--border);
+  border-radius: 8px; padding: 8px 10px; font-size: 12px; box-shadow: 0 4px 16px rgba(0,0,0,.15);
+  display: none; min-width: 170px; font-variant-numeric: tabular-nums; }
+#tip .row { display: flex; align-items: center; gap: 6px; justify-content: space-between; }
+#tip .row span:first-child { display: inline-flex; align-items: center; gap: 6px; color: var(--text-2); }
+#tip .t { color: var(--muted); margin-bottom: 4px; }
+.grid2 { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; margin-top: 16px; }
+@media (max-width: 800px) { .grid2 { grid-template-columns: 1fr; } .hero .value { font-size: 38px; } }
+h3 { font-size: 15px; margin: 0 0 10px; }
+.mons { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; }
+.mon { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
+.mon .top { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.mon .name { font-weight: 600; display: flex; align-items: center; gap: 6px; }
+.mon .w { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; margin-top: 4px; }
+.mon .why { color: var(--muted); font-size: 12px; }
+.badge { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 99px; border: 1px solid currentColor; white-space: nowrap; }
+.badge.on { color: var(--good); } .badge.standby { color: var(--warn); } .badge.off { color: var(--off); }
+.events { list-style: none; margin: 0; padding: 0; max-height: 260px; overflow-y: auto; font-size: 13px; }
+.events li { padding: 6px 0; border-bottom: 1px solid var(--border); }
+.events .t { color: var(--muted); font-variant-numeric: tabular-nums; margin-right: 6px; }
+.empty { color: var(--muted); font-size: 13px; }
+.err { background: color-mix(in srgb, var(--warn) 12%, transparent); border: 1px solid var(--warn);
+  color: var(--text); border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; display: none; font-size: 13px; }
+.foot { color: var(--muted); font-size: 12px; margin-top: 16px; }
+</style>
+</head>
+<body>
+<main>
+  <div class="err" id="err"></div>
+  <header>
+    <div class="hero">
+      <div class="label">Зараз з розетки (оцінка)</div>
+      <div class="value" id="total">—<small> W</small></div>
+      <div class="sub" id="split">ПК — · монітори —</div>
+    </div>
+    <div class="energy">
+      <div>Спожито з <span id="since">—</span></div>
+      <div><b id="kwh">—</b> kWh · <span id="cost">—</span></div>
+      <div id="conn" class="sub">підключення…</div>
+    </div>
+  </header>
+
+  <div class="tiles" id="tiles"></div>
+
+  <div class="card">
+    <div class="chart-head">
+      <h2>Потужність, W</h2>
+      <div class="seg" id="range">
+        <button data-s="60">1 хв</button>
+        <button data-s="300" aria-pressed="true">5 хв</button>
+        <button data-s="900">15 хв</button>
+        <button data-s="3600">1 год</button>
+      </div>
+    </div>
+    <div id="wrap"><canvas id="c"></canvas><div id="tip"></div></div>
+    <div class="legend" id="legend"></div>
+  </div>
+
+  <div class="grid2">
+    <div class="card"><h3>Монітори</h3><div class="mons" id="mons"></div></div>
+    <div class="card"><h3>Події моніторів</h3><ul class="events" id="events"></ul></div>
+  </div>
+
+  <div class="foot">
+    CPU — RAPL (package), GPU — nvidia-smi: виміряні. «Решта + втрати БЖ» і монітори — оцінки з config.json.
+  </div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+
+let history = [], events = [], cfg = {}, windowS = 300;
+// Fixed series order -> fixed color slot. Monitors get slots 4+ in connector order
+// the first time they are seen, and keep them.
+const series = [
+  { key: "cpu",  label: "CPU",                 slot: 1 },
+  { key: "gpu",  label: "GPU",                 slot: 2 },
+  { key: "rest", label: "Решта + втрати БЖ",   slot: 3 },
+];
+const monSlot = {};
+function ensureMonitorSeries(mons) {
+  for (const m of mons) {
+    if (monSlot[m.id]) continue;
+    monSlot[m.id] = Math.min(4 + Object.keys(monSlot).length, 8);
+    series.push({ key: "mon:" + m.id, label: m.name, slot: monSlot[m.id], mon: m.id });
+    renderLegend();
+  }
+}
+const color = s => css("--s" + s.slot);
+function val(sample, s) {
+  if (s.mon) { const m = sample.monitors.find(x => x.id === s.mon); return m ? m.watts : 0; }
+  return sample[s.key] ?? 0;
+}
+
+const fmtW = w => w == null ? "—" : (w >= 100 ? w.toFixed(0) : w.toFixed(1));
+const fmtTime = t => new Date(t * 1000).toLocaleTimeString("uk-UA", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+const stateUa = { on: "увімкнено", standby: "очікування", off: "вимкнено" };
+
+function renderLegend() {
+  $("legend").innerHTML = series.map(s =>
+    `<span><i class="sw" style="background:${color(s)}"></i>${s.label}</span>`).join("");
+}
+
+function renderTop(s) {
+  $("total").innerHTML = `${fmtW(s.total)}<small> W</small>`;
+  const monW = s.monitors.reduce((a, m) => a + m.watts, 0);
+  $("split").textContent = `ПК ${fmtW(s.pc)} W · монітори ${fmtW(monW)} W`;
+  $("kwh").textContent = (s.energy_wh / 1000).toFixed(3);
+  $("since").textContent = new Date(s.since * 1000).toLocaleString("uk-UA", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+  $("cost").textContent = cfg.price_per_kwh ? `${(s.energy_wh / 1000 * cfg.price_per_kwh).toFixed(2)} ${cfg.currency}` : "";
+
+  const tiles = [
+    { s: series[0], v: s.cpu, note: s.cpu == null ? "немає доступу до RAPL" : "виміряно" },
+    { s: series[1], v: s.gpu, note: s.gpu == null ? "немає даних" : "виміряно" },
+    { s: series[2], v: s.rest, note: "оцінка" },
+    { label: "Монітори", v: monW, note: `${s.monitors.filter(m => m.state === "on").length} з ${s.monitors.length} увімкнено` },
+  ];
+  $("tiles").innerHTML = tiles.map(t => `<div class="card tile">
+      <div class="k">${t.s ? `<i class="sw" style="background:${color(t.s)}"></i>${t.s.label}` : t.label}</div>
+      <div class="v">${fmtW(t.v)} W</div><div class="note">${t.note}</div></div>`).join("");
+
+  $("mons").innerHTML = s.monitors.map(m => {
+    const ser = series.find(x => x.mon === m.id);
+    const br = m.brightness != null ? ` · яскравість ${Math.round(m.brightness * 100)}%` : "";
+    return `<div class="mon">
+      <div class="top"><span class="name"><i class="sw" style="background:${ser ? color(ser) : "var(--muted)"}"></i>${m.name}</span>
+        <span class="badge ${m.state}">${stateUa[m.state]}</span></div>
+      <div class="w">${fmtW(m.watts)} W</div>
+      <div class="why">${m.id.replace(/^card\d+-/, "")} · ${m.why}${br}${m.ddc ? "" : " · без DDC"}</div></div>`;
+  }).join("") || `<div class="empty">Моніторів не знайдено</div>`;
+
+  const err = $("err");
+  err.style.display = s.errors.length ? "block" : "none";
+  err.textContent = s.errors.join(" · ");
+}
+
+function renderEvents() {
+  $("events").innerHTML = events.slice().reverse().map(e =>
+    `<li><span class="t">${fmtTime(e.t)}</span><b>${e.name}</b>: ${stateUa[e.from]} → ${stateUa[e.to]}
+     <div class="empty">${e.why}</div></li>`).join("") || `<li class="empty">Поки без змін</li>`;
+}
+
+// ---------------- chart
+const cv = $("c"), ctx = cv.getContext("2d");
+const PAD = { l: 44, r: 12, t: 10, b: 24 };
+let hoverX = null, geom = null;
+
+function draw() {
+  const dpr = window.devicePixelRatio || 1;
+  const W = cv.clientWidth, H = cv.clientHeight;
+  if (cv.width !== W * dpr || cv.height !== H * dpr) { cv.width = W * dpr; cv.height = H * dpr; }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  if (!history.length) return;
+
+  const tEnd = history[history.length - 1].t, tStart = tEnd - windowS;
+  const pts = history.filter(s => s.t >= tStart);
+  const maxTotal = Math.max(50, ...pts.map(p => series.reduce((a, s) => a + val(p, s), 0)));
+  const step = niceStep(maxTotal / 5);
+  const yMax = Math.ceil(maxTotal * 1.05 / step) * step;
+  const pw = W - PAD.l - PAD.r, ph = H - PAD.t - PAD.b;
+  const x = t => PAD.l + (t - tStart) / windowS * pw;
+  const y = v => PAD.t + ph - v / yMax * ph;
+  geom = { pts, x, y, tStart, pw };
+
+  // grid + y labels
+  ctx.font = "11px system-ui, sans-serif"; ctx.fillStyle = css("--muted");
+  ctx.strokeStyle = css("--grid"); ctx.lineWidth = 1;
+  ctx.textAlign = "right"; ctx.textBaseline = "middle";
+  for (let v = 0; v <= yMax; v += step) {
+    ctx.beginPath(); ctx.moveTo(PAD.l, Math.round(y(v)) + .5); ctx.lineTo(W - PAD.r, Math.round(y(v)) + .5); ctx.stroke();
+    ctx.fillText(v, PAD.l - 6, y(v));
+  }
+  // x labels
+  ctx.textAlign = "center"; ctx.textBaseline = "top";
+  const xStep = windowS <= 60 ? 10 : windowS <= 300 ? 60 : windowS <= 900 ? 180 : 600;
+  for (let t = Math.ceil(tStart / xStep) * xStep; t <= tEnd; t += xStep) {
+    const d = new Date(t * 1000);
+    const lbl = d.toLocaleTimeString("uk-UA", { hour: "2-digit", minute: "2-digit", ...(windowS <= 60 ? { second: "2-digit" } : {}) });
+    ctx.fillText(lbl, x(t), H - PAD.b + 6);
+  }
+  if (pts.length < 2) return;
+
+  // stacked areas, bottom to top, with a thin surface gap between bands
+  const surface = css("--surface");
+  let base = pts.map(() => 0);
+  for (const s of series) {
+    const top = pts.map((p, i) => base[i] + val(p, s));
+    ctx.beginPath();
+    pts.forEach((p, i) => i ? ctx.lineTo(x(p.t), y(top[i])) : ctx.moveTo(x(p.t), y(top[i])));
+    for (let i = pts.length - 1; i >= 0; i--) ctx.lineTo(x(pts[i].t), y(base[i]));
+    ctx.closePath();
+    ctx.fillStyle = color(s); ctx.globalAlpha = 0.85; ctx.fill(); ctx.globalAlpha = 1;
+    ctx.beginPath();
+    pts.forEach((p, i) => i ? ctx.lineTo(x(p.t), y(top[i])) : ctx.moveTo(x(p.t), y(top[i])));
+    ctx.strokeStyle = surface; ctx.lineWidth = 1.5; ctx.stroke();
+    base = top;
+  }
+  // total line
+  ctx.beginPath();
+  pts.forEach((p, i) => i ? ctx.lineTo(x(p.t), y(base[i])) : ctx.moveTo(x(p.t), y(base[i])));
+  ctx.strokeStyle = css("--text"); ctx.lineWidth = 2; ctx.stroke();
+
+  // monitor state change markers
+  ctx.setLineDash([3, 3]); ctx.strokeStyle = css("--muted"); ctx.lineWidth = 1;
+  for (const e of events) if (e.t >= tStart) {
+    ctx.beginPath(); ctx.moveTo(x(e.t) + .5, PAD.t); ctx.lineTo(x(e.t) + .5, PAD.t + ph); ctx.stroke();
+  }
+  ctx.setLineDash([]);
+
+  // crosshair
+  if (hoverX != null) {
+    const p = nearest(hoverX);
+    if (p) {
+      const px = x(p.t);
+      ctx.strokeStyle = css("--text-2"); ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(px + .5, PAD.t); ctx.lineTo(px + .5, PAD.t + ph); ctx.stroke();
+      showTip(p, px);
+    }
+  }
+}
+
+function niceStep(raw) {
+  const p = Math.pow(10, Math.floor(Math.log10(raw))), n = raw / p;
+  return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10) * p;
+}
+function nearest(px) {
+  if (!geom || !geom.pts.length) return null;
+  const t = geom.tStart + (px - PAD.l) / geom.pw * windowS;
+  let best = null, bd = Infinity;
+  for (const p of geom.pts) { const d = Math.abs(p.t - t); if (d < bd) { bd = d; best = p; } }
+  return best;
+}
+function showTip(p, px) {
+  const tip = $("tip");
+  const rows = series.slice().reverse().map(s =>
+    `<div class="row"><span><i class="sw" style="background:${color(s)}"></i>${s.label}</span><b>${fmtW(val(p, s))} W</b></div>`).join("");
+  tip.innerHTML = `<div class="t">${fmtTime(p.t)}</div>${rows}
+    <div class="row" style="margin-top:4px;border-top:1px solid var(--border);padding-top:4px"><span>Разом</span><b>${fmtW(p.total)} W</b></div>`;
+  tip.style.display = "block";
+  const wrapW = $("wrap").clientWidth, tw = tip.offsetWidth;
+  tip.style.left = (px + 14 + tw > wrapW ? px - 14 - tw : px + 14) + "px";
+  tip.style.top = "10px";
+}
+cv.addEventListener("pointermove", e => { hoverX = e.offsetX; draw(); });
+cv.addEventListener("pointerleave", () => { hoverX = null; $("tip").style.display = "none"; draw(); });
+new ResizeObserver(draw).observe(cv);
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { renderLegend(); draw(); });
+
+$("range").addEventListener("click", e => {
+  const b = e.target.closest("button"); if (!b) return;
+  windowS = +b.dataset.s;
+  for (const x of $("range").children) x.setAttribute("aria-pressed", x === b);
+  try { localStorage.setItem("pg-window", windowS); } catch {}
+  draw();
+});
+try {
+  const w = +localStorage.getItem("pg-window");
+  if (w) { windowS = w; for (const x of $("range").children) x.setAttribute("aria-pressed", +x.dataset.s === w); }
+} catch {}
+
+// ---------------- data
+async function start() {
+  const r = await fetch("/history").then(r => r.json());
+  history = r.history; events = r.events; cfg = r.config;
+  for (const s of history) ensureMonitorSeries(s.monitors);
+  renderLegend(); renderEvents();
+  if (history.length) renderTop(history[history.length - 1]);
+  draw();
+
+  const es = new EventSource("/stream");
+  es.onopen = () => $("conn").textContent = "наживо";
+  es.onerror = () => $("conn").textContent = "з'єднання втрачено, перепідключаюсь…";
+  es.onmessage = ev => {
+    const { sample, events: ev2 } = JSON.parse(ev.data);
+    history.push(sample);
+    const cutoff = sample.t - 3600; while (history.length && history[0].t < cutoff) history.shift();
+    ensureMonitorSeries(sample.monitors);
+    if (ev2.length !== events.length || (ev2.length && ev2.at(-1).t !== events.at(-1)?.t)) { events = ev2; renderEvents(); }
+    renderTop(sample);
+    draw();
+  };
+}
+start();
+</script>
+</body>
+</html>
