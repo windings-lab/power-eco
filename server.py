@@ -74,6 +74,24 @@ def linux_cpu_mhz():
     return sum(vals) / len(vals) if vals else None
 
 
+class LinuxCpuLoad:
+    """CPU busy % from /proc/stat deltas between calls."""
+
+    def __init__(self):
+        self.prev = None
+
+    def read(self):
+        try:
+            f = [int(x) for x in Path("/proc/stat").read_text().split("\n", 1)[0].split()[1:]]
+        except (OSError, ValueError):
+            return None
+        idle, total = f[3] + f[4], sum(f[:8])  # idle + iowait; user..steal
+        prev, self.prev = self.prev, (idle, total)
+        if prev is None or total == prev[1]:
+            return None
+        return 100.0 * (1 - (idle - prev[0]) / (total - prev[1]))
+
+
 # ---------------------------------------------------------------- GPU (NVIDIA)
 
 class NvidiaPower:
@@ -387,6 +405,7 @@ class WinCpu:
         self.value = None
         self.source = None
         self.mhz = None
+        self.util = None
         self.error = None
         threading.Thread(target=self._run, daemon=True).start()
 
@@ -403,6 +422,7 @@ class WinCpu:
                     except ValueError:
                         continue
                     self.mhz = d.get("mhz")
+                    self.util = d.get("util")
                     lhm = None
                     if d.get("lhm"):
                         m = re.search(r"[\d.,]+", str(d["lhm"]))
@@ -554,6 +574,15 @@ class Sampler:
         mhz = self.rapl.mhz if self.mode == "windows" else linux_cpu_mhz()
         return None if mhz is None else round(mhz)
 
+    def _cpu_load(self):
+        if self.mode == "windows":
+            u = self.rapl.util
+        else:
+            if not hasattr(self, "_load"):
+                self._load = LinuxCpuLoad()
+            u = self._load.read()
+        return None if u is None else round(min(max(u, 0), 100))
+
     def _sample(self):
         cpu = self.rapl.read()
         gpu = self.gpu.value
@@ -579,6 +608,7 @@ class Sampler:
             "t": now,
             "cpu": None if cpu is None else round(cpu, 1),
             "cpu_mhz": self._cpu_mhz(),
+            "cpu_load": self._cpu_load(),
             "gpu": None if gpu is None else round(gpu, 1),
             "rest": round(rest, 1),
             "monitors": mons,
