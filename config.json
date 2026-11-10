@@ -1,4 +1,9 @@
 {
+  "_mode": "auto | linux | windows. auto = windows under WSL. Override: --windows / --linux.",
+  "mode": "auto",
+  "_windows": "Windows mode: CPU from Energy Meter counter if present, else cpu_idle_w..cpu_max_w scaled by CPU utilisation.",
+  "windows": { "cpu_idle_w": 8, "cpu_max_w": 65, "cpu_smooth": 0.25, "lhm_url": "http://localhost:8085/data.json" },
+  "_lhm": "Optional: run LibreHardwareMonitor (admin) with Remote Web Server on for real CPU Package watts. Empty lhm_url disables it.",
   "port": 8777,
   "sample_interval_s": 1.0,
   "history_s": 3600,

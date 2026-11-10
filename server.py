@@ -247,13 +247,276 @@ class Monitors:
         return out
 
 
+# ---------------------------------------------------------------- Windows mode
+# Used when running under WSL (or native Windows): /sys has no RAPL/DRM/DDC,
+# so CPU and monitors are read from the Windows host through powershell.exe.
+
+def is_wsl():
+    try:
+        return "microsoft" in Path("/proc/version").read_text().lower()
+    except OSError:
+        return False
+
+
+PS_CPU = r"""
+$ErrorActionPreference = 'SilentlyContinue'
+$em = (Get-Counter -ListSet 'Energy Meter').PathsWithInstances | Where-Object { $_ -like '*RAPL_Package0_PKG*\Power' } | Select-Object -First 1
+$util = '\Processor Information(_Total)\% Processor Utility'
+$lhmUrl = '__LHM__'
+function Find-Pkg($n, $parent) {
+  if ($n.Text -eq 'CPU Package' -and $parent -eq 'Powers') { return $n.Value }
+  foreach ($c in $n.Children) { $r = Find-Pkg $c $n.Text; if ($r) { return $r } }
+}
+while ($true) {
+  $l = $null
+  if ($lhmUrl) { try { $l = Find-Pkg (Invoke-RestMethod -Uri $lhmUrl -TimeoutSec 1) '' } catch {} }
+  $paths = @($util); if ($em) { $paths += $em }
+  $s = (Get-Counter -Counter $paths).CounterSamples
+  $u = ($s | Where-Object { $_.Path -like '*processor utility' }).CookedValue
+  $p = $null; if ($em) { $p = ($s | Where-Object { $_.Path -like '*\power' }).CookedValue }
+  [Console]::Out.WriteLine((@{ util = $u; mw = $p; lhm = $l } | ConvertTo-Json -Compress))
+  [Console]::Out.Flush()
+}
+"""
+
+PS_MON = r"""
+$ErrorActionPreference = 'SilentlyContinue'
+$br = @{}
+Get-CimInstance -Namespace root/wmi -ClassName WmiMonitorBrightness | ForEach-Object { $br[$_.InstanceName] = $_.CurrentBrightness }
+$list = @(Get-CimInstance -Namespace root/wmi -ClassName WmiMonitorID | ForEach-Object {
+  $n = -join ($_.UserFriendlyName | Where-Object { $_ -ne 0 } | ForEach-Object { [char]$_ })
+  @{ id = $_.InstanceName; name = $n; brightness = $br[$_.InstanceName]; active = [bool]$_.Active }
+})
+ConvertTo-Json -Compress -InputObject $list
+"""
+
+
+PS_DDC = r"""
+$ErrorActionPreference = 'SilentlyContinue'
+Add-Type -TypeDefinition @'
+using System; using System.Runtime.InteropServices; using System.Text; using System.Collections.Generic;
+public class Ddc {
+  delegate bool EnumProc(IntPtr h, IntPtr hdc, IntPtr r, IntPtr d);
+  [StructLayout(LayoutKind.Sequential)] struct RECT { public int l, t, r, b; }
+  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] struct MI { public int cb; public RECT rc; public RECT rw; public uint fl; [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dev; }
+  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] struct DD { public int cb; [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string name; [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string str; public int flags; [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string id; [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string key; }
+  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode, Pack = 1)] struct PM { public IntPtr h; [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string desc; }
+  [DllImport("user32.dll")] static extern bool EnumDisplayMonitors(IntPtr hdc, IntPtr clip, EnumProc cb, IntPtr d);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern bool GetMonitorInfo(IntPtr h, ref MI mi);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern bool EnumDisplayDevices(string dev, uint i, ref DD dd, uint fl);
+  [DllImport("dxva2.dll")] static extern bool GetNumberOfPhysicalMonitorsFromHMONITOR(IntPtr h, out uint n);
+  [DllImport("dxva2.dll")] static extern bool GetPhysicalMonitorsFromHMONITOR(IntPtr h, uint n, [Out] PM[] a);
+  [DllImport("dxva2.dll")] static extern bool GetVCPFeatureAndVCPFeatureReply(IntPtr h, byte code, out uint type, out uint cur, out uint max);
+  [DllImport("dxva2.dll")] static extern bool DestroyPhysicalMonitors(uint n, PM[] a);
+  public static string Query() {
+    List<string> items = new List<string>();
+    EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, delegate (IntPtr hm, IntPtr hdc, IntPtr r, IntPtr d) {
+      MI mi = new MI(); mi.cb = Marshal.SizeOf(typeof(MI));
+      if (!GetMonitorInfo(hm, ref mi)) return true;
+      DD dd = new DD(); dd.cb = Marshal.SizeOf(typeof(DD));
+      string code = "";
+      for (uint q = 0; q < 8; q++) {
+        DD x = new DD(); x.cb = Marshal.SizeOf(typeof(DD));
+        if (!EnumDisplayDevices(mi.dev, q, ref x, 1)) break;
+        if ((x.flags & 1) == 0) {  // attached but not part of the desktop (e.g. TV switched off)
+          string[] pi = x.id.Split('#');
+          if (pi.Length > 2) items.Add("{\"code\":\"" + (pi[1] + "\\" + pi[2]).Replace("\\", "\\\\") + "\",\"inactive\":true}");
+          continue;
+        }
+        string[] p = x.id.Split('#'); if (p.Length > 2) code = p[1] + "\\" + p[2];
+        break;
+      }
+      uint n; if (!GetNumberOfPhysicalMonitorsFromHMONITOR(hm, out n) || n == 0) return true;
+      PM[] a = new PM[n]; if (!GetPhysicalMonitorsFromHMONITOR(hm, n, a)) return true;
+      for (int i = 0; i < n; i++) {
+        uint t, cur, max; string pw = "null", br = "null", ok = "false";
+        if (GetVCPFeatureAndVCPFeatureReply(a[i].h, 0x10, out t, out cur, out max) && max > 0) { br = string.Format(System.Globalization.CultureInfo.InvariantCulture, "{0:0.####}", (double)cur / max); ok = "true"; }
+        if (GetVCPFeatureAndVCPFeatureReply(a[i].h, 0xD6, out t, out cur, out max)) { pw = (cur & 0xFF).ToString(); ok = "true"; }
+        items.Add("{\"code\":\"" + code.Replace("\\", "\\\\") + "\",\"power\":" + pw + ",\"brightness\":" + br + ",\"ok\":" + ok + "}");
+      }
+      DestroyPhysicalMonitors(n, a);
+      return true;
+    }, IntPtr.Zero);
+    return "[" + string.Join(",", items.ToArray()) + "]";
+  }
+}
+'@
+while ($true) {
+  [Console]::Out.WriteLine([Ddc]::Query())
+  [Console]::Out.Flush()
+  Start-Sleep -Seconds __INT__
+}
+"""
+
+
+def powershell(script, **kw):
+    return subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+                          capture_output=True, text=True, **kw)
+
+
+class WinCpu:
+    """CPU power: Energy Meter (RAPL) counter if Windows exposes it, else estimated from utilisation."""
+
+    def __init__(self):
+        w = CFG.get("windows", {})
+        self.idle_w = w.get("cpu_idle_w", 8)
+        self.max_w = w.get("cpu_max_w", 65)
+        self.alpha = w.get("cpu_smooth", 0.25)  # EMA factor for the utilisation estimate (1 = no smoothing)
+        self._ema = None
+        self.value = None
+        self.source = None
+        self.error = None
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def _run(self):
+        while True:
+            try:
+                p = subprocess.Popen(
+                    ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+                     PS_CPU.replace("__LHM__", CFG.get("windows", {}).get("lhm_url", ""))],
+                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+                for line in p.stdout:
+                    try:
+                        d = json.loads(line)
+                    except ValueError:
+                        continue
+                    lhm = None
+                    if d.get("lhm"):
+                        m = re.search(r"[\d.,]+", str(d["lhm"]))
+                        if m:
+                            try:
+                                lhm = float(m.group().replace(",", "."))
+                            except ValueError:
+                                pass
+                    if lhm is not None:
+                        self.value, self.source = lhm, "librehardwaremonitor"
+                    elif d.get("mw") is not None:
+                        self.value, self.source = d["mw"] / 1000.0, "energy-meter"
+                    elif d.get("util") is not None:
+                        u = min(max(d["util"], 0), 100) / 100
+                        raw = self.idle_w + (self.max_w - self.idle_w) * u
+                        self._ema = raw if self._ema is None else self._ema + self.alpha * (raw - self._ema)
+                        self.value = self._ema
+                        self.source = "estimate"
+                    self.error = None
+                p.wait()
+            except FileNotFoundError:
+                self.error = "powershell.exe not found (windows mode)"
+                return
+            self.value = None
+            self.error = "powershell exited, restarting"
+            time.sleep(5)
+
+    def read(self):
+        return self.value
+
+
+class WinMonitors:
+    """Monitors on Windows: names/active from WMI, power state + brightness from DDC/CI
+    (dxva2 Monitor Configuration API), same VCP D6/10 logic as the Linux Ddc class."""
+
+    def __init__(self):
+        self.items = []       # WMI: id, name, active, brightness
+        self.ddc = {}         # PnP code (e.g. "DELA021") -> {"power","brightness","ok"}
+        self.seen_ok = set()
+        self.inactive = set()  # attached to a port but not in the desktop: switched off
+        self.lock = threading.Lock()
+        self.error = None
+        threading.Thread(target=self._wmi, daemon=True).start()
+        threading.Thread(target=self._ddc, daemon=True).start()
+
+    def _wmi(self):
+        while True:
+            try:
+                out = powershell(PS_MON, timeout=60).stdout.strip()
+                data = json.loads(out) if out else []
+                if isinstance(data, dict):
+                    data = [data]
+                with self.lock:
+                    self.items = data
+                self.error = None
+            except (FileNotFoundError, subprocess.TimeoutExpired, ValueError) as ex:
+                self.error = f"monitor query failed: {ex}"
+            time.sleep(max(CFG["ddc_interval_s"], 30))
+
+    def _ddc(self):
+        script = PS_DDC.replace("__INT__", str(int(CFG["ddc_interval_s"])))
+        while True:
+            try:
+                p = subprocess.Popen(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+                                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+                for line in p.stdout:
+                    try:
+                        arr = json.loads(line)
+                    except ValueError:
+                        continue
+                    cur, inactive = {}, set()
+                    for e in arr:
+                        if e.get("inactive"):
+                            inactive.add(e["code"])
+                            continue
+                        cur[e["code"]] = {"power": None if e["power"] is None else ("on" if e["power"] == 1 else "standby"),
+                                          "brightness": e["brightness"], "ok": e["ok"]}
+                    with self.lock:
+                        self.ddc = cur
+                        self.inactive = inactive - set(cur)
+                        self.seen_ok |= {c for c, v in cur.items() if v["ok"]}
+                p.wait()
+            except FileNotFoundError:
+                return
+            time.sleep(5)
+
+    def read(self):
+        with self.lock:
+            items, ddc, seen = list(self.items), dict(self.ddc), set(self.seen_ok)
+            inactive = set(self.inactive)
+        out = []
+        for m in items:
+            name = m.get("name") or m["id"]
+            parts = m["id"].split("\\")
+            code = "\\".join(parts[1:3]).rsplit("_", 1)[0] if len(parts) >= 3 else m["id"]
+            cfg = CFG["monitors"].get(name, {**CFG["default_monitor"], "label": name})
+            capable = cfg.get("ddc", False) or code in seen
+            d = ddc.get(code) if capable else None
+            b = d["brightness"] if d and d["brightness"] is not None else (
+                m["brightness"] / 100 if m.get("brightness") is not None else None)
+
+            if not m.get("active", True):
+                state, why = "off", "Windows: вимкнено/від'єднано"
+            elif code in inactive and not d:
+                state, why = "off", "Windows: підключено, але не активний (вимкнено)"
+            elif capable and d and d["power"] == "standby":
+                state, why = "off", "вимкнено кнопкою (DDC: power off)"
+            elif capable and d is None:
+                state, why = "off", "вимкнено кнопкою (DDC мовчить)"
+            elif capable and d and not d["ok"]:
+                state, why = "off", "вимкнено кнопкою (DDC мовчить)"
+            else:
+                state, why = "on", "є сигнал" + (" + DDC on" if d else " (стан кнопки невідомий)")
+
+            if state == "on":
+                watts = cfg["on_w_min"] + (cfg["on_w_max"] - cfg["on_w_min"]) * (b if b is not None else 1.0)
+            elif m.get("active", True) or code in inactive:
+                watts = cfg["standby_w"]
+            else:
+                watts = 0.0
+            out.append({"id": m["id"], "name": cfg.get("label", name), "state": state, "why": why,
+                        "watts": round(watts, 1), "brightness": b, "ddc": capable})
+        return out
+
+
 # ---------------------------------------------------------------- Sampler
 
 class Sampler:
-    def __init__(self):
-        self.rapl = Rapl()
+    def __init__(self, mode="linux"):
+        self.mode = mode
         self.gpu = NvidiaPower(int(CFG["sample_interval_s"] * 1000))
-        self.mon = Monitors(Ddc(CFG["ddc_interval_s"]))
+        if mode == "windows":
+            self.rapl = WinCpu()
+            self.mon = WinMonitors()
+        else:
+            self.rapl = Rapl()
+            self.mon = Monitors(Ddc(CFG["ddc_interval_s"]))
         n = int(CFG["history_s"] / CFG["sample_interval_s"])
         self.history = deque(maxlen=n)
         self.events = deque(maxlen=200)
@@ -295,7 +558,8 @@ class Sampler:
             "total": round(total, 1),
             "energy_wh": round(self.energy_wh, 2),
             "since": self.started,
-            "errors": [e for e in (self.rapl.error, self.gpu.error) if e],
+            "errors": [e for e in (self.rapl.error, self.gpu.error, getattr(self.mon, "error", None)) if e],
+            "mode": self.mode,
         }
 
     def _run(self):
@@ -371,11 +635,19 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     global SAMPLER
-    SAMPLER = Sampler()
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else CFG["port"]
+    args = sys.argv[1:]
+    mode = CFG.get("mode", "auto")
+    for flag in ("--windows", "--linux"):
+        if flag in args:
+            args.remove(flag)
+            mode = flag[2:]
+    if mode == "auto":
+        mode = "windows" if is_wsl() else "linux"
+    SAMPLER = Sampler(mode)
+    port = int(args[0]) if args else CFG["port"]
     srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     srv.daemon_threads = True
-    print(f"Power graph: http://localhost:{port}/")
+    print(f"Power graph ({mode} mode): http://localhost:{port}/")
     srv.serve_forever()
 
 

@@ -47,3 +47,28 @@ sudo systemd-tmpfiles --create /etc/tmpfiles.d/rapl-read.conf
 ```
 
 Правило застосовується знову на кожному завантаженні. Без нього графік працює, але CPU показується як «немає доступу».
+
+## Windows / WSL
+
+Під WSL `server.py` сам вмикає режим **windows** (`--windows` / `--linux` або `"mode"` у config.json). Запуск: `uv run --no-project python server.py`.
+
+| Що | Джерело у Windows |
+|---|---|
+| CPU | LibreHardwareMonitor `CPU Package` (`/data.json`) → лічильник Energy Meter → оцінка за завантаженням (`windows.cpu_idle_w`..`cpu_max_w`) |
+| GPU | `nvidia-smi` |
+| Монітори | імена/активність з WMI, DDC/CI (VCP D6/10) через dxva2 — та сама логіка, що й на Linux |
+
+Справжні ватти CPU: `scoop install extras/librehardwaremonitor`, запустити **від адміністратора**, Options → Remote Web Server → Run (порт 8085). Якщо не запущено — працює оцінка.
+
+### power-eco у Windows
+
+```
+power-eco start|stop|status|rapl     # у WSL: викликає power-eco.ps1 на боці Windows
+```
+
+Потрібен адмін (UAC-запит). Стан зберігається в `%LOCALAPPDATA%\power-eco\state.json`.
+
+- **CPU:** ліміт RAPL PL1 = PL2 = 25 W (інше значення: `power-eco start 45`) пишеться в `MSR_PKG_POWER_LIMIT` (0x610) через драйвер PawnIO (ставиться разом із LibreHardwareMonitor) і модуль `IntelMSR.bin` з [PawnIO.Modules 0.2.11](https://github.com/namazso/PawnIO.Modules/releases) (скрипт сам завантажує його й перевіряє SHA256). `stop` повертає початкове значення регістра; перезавантаження теж скидає ліміт. `power-eco rapl` показує поточні PL1/PL2.
+- `powercfg` (макс. стан 60%, EPP=power, boost вимкнено) теж виставляється, але під Hyper-V/WSL2 Windows ці обмеження ігнорує.
+- **GPU:** `nvidia-smi.exe` -lgc/-lmc/-pl.
+Для systemd-сервісу в WSL встановіть обидва файли: `sudo install -m 755 power-eco /usr/local/bin/ && sudo install -m 644 power-eco.ps1 /usr/local/bin/`.

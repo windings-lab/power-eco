@@ -6,6 +6,17 @@
 
 set -euo pipefail
 
+# Under WSL there is no /sys cpufreq/RAPL: hand over to the Windows implementation.
+# It must live on the Windows side (an elevated process can't read \\wsl.localhost paths).
+if grep -qi microsoft /proc/version 2>/dev/null; then
+    src=$(dirname "$(readlink -f "$0")")/power-eco.ps1
+    [[ -f $src ]] || src=/usr/local/bin/power-eco.ps1
+    winapp=$(cd /mnt/c && powershell.exe -NoProfile -Command '$env:LOCALAPPDATA' | tr -d '\r')
+    dest=$(wslpath -u "$winapp")/power-eco
+    mkdir -p "$dest" && install -m 644 "$src" "$dest/power-eco.ps1"
+    cd /mnt/c && exec powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$winapp\\power-eco\\power-eco.ps1" "${1:-status}" "${@:2}"
+fi
+
 # ---- eco limits
 CPU_MAX_PCT=60          # intel_pstate max_perf_pct: ~60% of 3.9 GHz ≈ 2.3 GHz
 CPU_EPP=power           # energy_performance_preference
@@ -68,5 +79,5 @@ stop() {
 case ${1-} in
 start) start ;;
 stop) stop ;;
-*) echo "usage: $0 start|stop" >&2; exit 2 ;;
+*) echo "usage: $0 start|stop|status" >&2; exit 2 ;;
 esac
