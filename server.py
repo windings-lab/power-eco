@@ -17,8 +17,14 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent
-CFG = json.loads((HERE / "config.json").read_text())
+if getattr(sys, "frozen", False):
+    # PyInstaller binary: index.html and a default config.json are bundled;
+    # a config.json next to the executable overrides the bundled one.
+    BUNDLE = Path(sys._MEIPASS)
+    HERE = Path(sys.executable).resolve().parent
+else:
+    BUNDLE = HERE = Path(__file__).resolve().parent
+CFG = json.loads(((HERE if (HERE / "config.json").exists() else BUNDLE) / "config.json").read_text())
 
 RAPL_DIR = "/sys/class/powercap/intel-rapl:0"
 
@@ -550,6 +556,31 @@ class WinMonitors:
 
 # ---------------------------------------------------------------- Sampler
 
+def rest_dc_w(busy_w):
+    """Board/RAM/SSD/fans (DC side): rest_idle_w when CPU+GPU are idle, rising to
+    rest_load_w at rest_ref_w of CPU+GPU power. Falls back to the fixed rest_of_system_w."""
+    if "rest_idle_w" not in CFG:
+        return CFG["rest_of_system_w"]
+    lo, hi = CFG["rest_idle_w"], CFG.get("rest_load_w", CFG["rest_idle_w"])
+    k = min(max(busy_w / CFG.get("rest_ref_w", 200), 0.0), 1.0)
+    return lo + (hi - lo) * k
+
+
+def psu_efficiency(dc_w):
+    """PSU efficiency at this DC load: linear interpolation of psu_curve
+    ([[fraction of psu_rated_w, efficiency], ...]); flat psu_efficiency otherwise."""
+    curve = CFG.get("psu_curve")
+    if not curve or not CFG.get("psu_rated_w"):
+        return CFG["psu_efficiency"]
+    x = dc_w / CFG["psu_rated_w"]
+    if x <= curve[0][0]:
+        return curve[0][1]
+    for (x0, y0), (x1, y1) in zip(curve, curve[1:]):
+        if x <= x1:
+            return y0 + (y1 - y0) * (x - x0) / (x1 - x0)
+    return curve[-1][1]
+
+
 class Sampler:
     def __init__(self, mode="linux"):
         self.mode = mode
@@ -587,9 +618,10 @@ class Sampler:
         cpu = self.rapl.read()
         gpu = self.gpu.value
         mons = self.mon.read()
-        eff = CFG["psu_efficiency"]
-        dc = (cpu or 0) + (gpu or 0) + CFG["rest_of_system_w"]
-        wall_pc = dc / eff
+        busy = (cpu or 0) + (gpu or 0)
+        rest_dc = rest_dc_w(busy)
+        dc = busy + rest_dc
+        wall_pc = dc / psu_efficiency(dc)
         # "rest" = fixed board estimate + PSU conversion loss, so the stack sums to wall power.
         rest = wall_pc - (cpu or 0) - (gpu or 0)
         mon_total = sum(m["watts"] for m in mons)
@@ -665,7 +697,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path in ("/", "/index.html"):
-            self._send(200, (HERE / "index.html").read_bytes(), "text/html; charset=utf-8")
+            self._send(200, (BUNDLE / "index.html").read_bytes(), "text/html; charset=utf-8")
         elif self.path == "/history":
             with SAMPLER.lock:
                 data = {"history": list(SAMPLER.history), "events": list(SAMPLER.events),

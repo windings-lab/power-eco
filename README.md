@@ -12,8 +12,8 @@ python3 server.py        # → http://localhost:8777/
 |---|---|---|
 | CPU | RAPL `intel-rapl:0/energy_uj` (package) | виміряно |
 | GPU | `nvidia-smi` power.draw | виміряно |
-| Решта (плата, RAM, SSD, вентилятори) | `rest_of_system_w` | оцінка |
-| Втрати БЖ | `/ psu_efficiency` | оцінка |
+| Решта (плата, RAM, SSD, вентилятори) | `rest_idle_w`..`rest_load_w` за навантаженням CPU+GPU | оцінка |
+| Втрати БЖ | `/ ККД` за кривою `psu_curve` (Chieftec BDF-750C, Bronze) | оцінка |
 | Монітори | стан із DRM + DDC/CI, ватти з `config.json` | оцінка |
 
 ### Стан моніторів

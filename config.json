@@ -12,9 +12,16 @@
   "currency": "₴",
 
   "_rest": "Motherboard, RAM, SSDs, fans, USB: no sensor, fixed estimate (W, DC side).",
+  "_rest_dyn": "Board/RAM/SSD/fans rise from rest_idle_w to rest_load_w as CPU+GPU power reaches rest_ref_w. Estimates, no sensor exists.",
+  "rest_idle_w": 25,
+  "rest_load_w": 40,
+  "rest_ref_w": 200,
   "rest_of_system_w": 30,
   "_psu": "Wall power = DC power / efficiency. ~0.87 for an 80+ Gold PSU at low load.",
   "psu_efficiency": 0.87,
+  "_psu_curve": "Chieftec Proton BDF-750C, 80 PLUS Bronze. No measured data for this unit: Bronze minimums (~82/85/82% at 20/50/100% load) plus a typical drop below 10% load. Pairs are [fraction of psu_rated_w, efficiency].",
+  "psu_rated_w": 750,
+  "psu_curve": [[0.05, 0.70], [0.10, 0.77], [0.20, 0.82], [0.50, 0.85], [1.00, 0.82]],
 
   "_monitors": "Matched by EDID model name. on_w_min/on_w_max are scaled by DDC brightness when it can be read; otherwise on_w_max is used.",
   "monitors": {
