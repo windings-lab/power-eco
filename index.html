@@ -162,7 +162,7 @@ function renderTop(s) {
   $("cost").textContent = cfg.price_per_kwh ? `${(s.energy_wh / 1000 * cfg.price_per_kwh).toFixed(2)} ${cfg.currency}` : "";
 
   const tiles = [
-    { s: series[0], v: s.cpu, note: s.cpu == null ? "немає доступу до RAPL" : "виміряно" },
+    { s: series[0], v: s.cpu, note: (s.cpu_mhz != null ? `${s.cpu_mhz.toLocaleString("uk-UA")} MHz · ` : "") + (s.cpu == null ? "немає доступу до RAPL" : "виміряно") },
     { s: series[1], v: s.gpu, note: s.gpu == null ? "немає даних" : "виміряно" },
     { s: series[2], v: s.rest, note: "оцінка" },
     { label: "Монітори", v: monW, note: `${s.monitors.filter(m => m.state === "on").length} з ${s.monitors.length} увімкнено` },

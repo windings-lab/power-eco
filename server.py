@@ -58,6 +58,22 @@ class Rapl:
         return de / 1e6 / dt if dt > 0 else None
 
 
+def linux_cpu_mhz():
+    """Average current core frequency (MHz) from cpufreq, else /proc/cpuinfo."""
+    vals = []
+    for f in glob.glob("/sys/devices/system/cpu/cpu[0-9]*/cpufreq/scaling_cur_freq"):
+        try:
+            vals.append(int(Path(f).read_text()) / 1000)
+        except (OSError, ValueError):
+            pass
+    if not vals:
+        try:
+            vals = [float(m) for m in re.findall(r"^cpu MHz\s*:\s*([\d.]+)", Path("/proc/cpuinfo").read_text(), re.M)]
+        except OSError:
+            pass
+    return sum(vals) / len(vals) if vals else None
+
+
 # ---------------------------------------------------------------- GPU (NVIDIA)
 
 class NvidiaPower:
@@ -262,6 +278,8 @@ PS_CPU = r"""
 $ErrorActionPreference = 'SilentlyContinue'
 $em = (Get-Counter -ListSet 'Energy Meter').PathsWithInstances | Where-Object { $_ -like '*RAPL_Package0_PKG*\Power' } | Select-Object -First 1
 $util = '\Processor Information(_Total)\% Processor Utility'
+$perf = '\Processor Information(_Total)\% Processor Performance'
+$nom  = '\Processor Information(_Total)\Processor Frequency'
 $lhmUrl = '__LHM__'
 function Find-Pkg($n, $parent) {
   if ($n.Text -eq 'CPU Package' -and $parent -eq 'Powers') { return $n.Value }
@@ -270,11 +288,14 @@ function Find-Pkg($n, $parent) {
 while ($true) {
   $l = $null
   if ($lhmUrl) { try { $l = Find-Pkg (Invoke-RestMethod -Uri $lhmUrl -TimeoutSec 1) '' } catch {} }
-  $paths = @($util); if ($em) { $paths += $em }
+  $paths = @($util, $perf, $nom); if ($em) { $paths += $em }
   $s = (Get-Counter -Counter $paths).CounterSamples
   $u = ($s | Where-Object { $_.Path -like '*processor utility' }).CookedValue
   $p = $null; if ($em) { $p = ($s | Where-Object { $_.Path -like '*\power' }).CookedValue }
-  [Console]::Out.WriteLine((@{ util = $u; mw = $p; lhm = $l } | ConvertTo-Json -Compress))
+  $pf = ($s | Where-Object { $_.Path -like '*% processor performance' }).CookedValue
+  $nf = ($s | Where-Object { $_.Path -like '*\processor frequency' }).CookedValue
+  $mhz = $null; if ($pf -and $nf) { $mhz = $pf * $nf / 100 }
+  [Console]::Out.WriteLine((@{ util = $u; mw = $p; lhm = $l; mhz = $mhz } | ConvertTo-Json -Compress))
   [Console]::Out.Flush()
 }
 """
@@ -365,6 +386,7 @@ class WinCpu:
         self._ema = None
         self.value = None
         self.source = None
+        self.mhz = None
         self.error = None
         threading.Thread(target=self._run, daemon=True).start()
 
@@ -380,6 +402,7 @@ class WinCpu:
                         d = json.loads(line)
                     except ValueError:
                         continue
+                    self.mhz = d.get("mhz")
                     lhm = None
                     if d.get("lhm"):
                         m = re.search(r"[\d.,]+", str(d["lhm"]))
@@ -527,6 +550,10 @@ class Sampler:
         self._last_states = {}
         threading.Thread(target=self._run, daemon=True).start()
 
+    def _cpu_mhz(self):
+        mhz = self.rapl.mhz if self.mode == "windows" else linux_cpu_mhz()
+        return None if mhz is None else round(mhz)
+
     def _sample(self):
         cpu = self.rapl.read()
         gpu = self.gpu.value
@@ -551,6 +578,7 @@ class Sampler:
         return {
             "t": now,
             "cpu": None if cpu is None else round(cpu, 1),
+            "cpu_mhz": self._cpu_mhz(),
             "gpu": None if gpu is None else round(gpu, 1),
             "rest": round(rest, 1),
             "monitors": mons,
